@@ -1,0 +1,212 @@
+# all-in-one.yaml
+# Namespace + Secret + PVC + MySQL + Backend + Frontend (Services + Deployments)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: smp
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-secret
+  namespace: smp
+type: Opaque
+stringData:
+  MYSQL_ROOT_PASSWORD: rootpass
+  MYSQL_USER: smpuser
+  MYSQL_PASSWORD: Sreecharan@9121
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: smp
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+
+# MySQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: smp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              value: smpdb
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >
+                  mysqladmin ping -h 127.0.0.1 -u${MYSQL_USER} -p${MYSQL_PASSWORD} || exit 1
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: smp
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+      protocol: TCP
+  type: ClusterIP
+---
+# Backend Deployment (Spring Boot)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smp-backend
+  namespace: smp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smp-backend
+  template:
+    metadata:
+      labels:
+        app: smp-backend
+    spec:
+      containers:
+        - name: smp-backend
+          # <<< REPLACE this with your backend image (push to registry or use local image when on Docker Desktop)
+          image: yourdockerhubuser/smp-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          env:
+            - name: DB_HOST
+              value: mysql
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: smpdb
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 30
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smp-backend
+  namespace: smp
+spec:
+  selector:
+    app: smp-backend
+  ports:
+    - port: 8082
+      targetPort: 8082
+      protocol: TCP
+  type: ClusterIP
+---
+# Frontend Deployment (nginx serving built app)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smp-frontend
+  namespace: smp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smp-frontend
+  template:
+    metadata:
+      labels:
+        app: smp-frontend
+    spec:
+      containers:
+        - name: smp-frontend
+          # <<< REPLACE this with your frontend image
+          image: yourdockerhubuser/smp-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          env:
+            - name: REACT_APP_BACKEND_BASE_URL
+              value: "http://smp-backend:8082"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smp-frontend
+  namespace: smp
+spec:
+  selector:
+    app: smp-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      nodePort: 30080
+  type: NodePort
